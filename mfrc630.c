@@ -2,6 +2,7 @@
   The MIT License (MIT)
 
   Copyright (c) 2016 Ivor Wanders
+  Copyright (c) 2020 Florian Mikulik
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -672,6 +673,179 @@ uint8_t mfrc630_iso14443a_select(uint8_t* uid, uint8_t* sak) {
   return 0;  // getting an UID failed.
 }
 
+
+
+//---------------------------------//
+//--------ISO14443 Layer 4---------//
+//---------------------------------//
+
+
+uint8_t bPCB = 0x02;//No CID, no NAD
+
+
+uint8_t mfrc630_iso14443a_RATS(uint8_t* ats) {
+  mfrc630_cmd_idle();
+  // mfrc630_AN1102_recommended_registers_no_transmitter(MFRC630_PROTO_ISO14443A_106_MILLER_MANCHESTER);
+  mfrc630_flush_fifo();
+
+  // disable the CRC registers. CRC needs to be appended externally
+  mfrc630_write_reg(MFRC630_REG_TXCRCPRESET, MFRC630_RECOM_14443A_CRC | MFRC630_CRC_OFF);
+  mfrc630_write_reg(MFRC630_REG_RXCRCCON, MFRC630_RECOM_14443A_CRC | MFRC630_CRC_OFF);
+
+  mfrc630_write_reg(MFRC630_REG_RXBITCTRL, 0);
+
+  // RATS command for FSDI 256 byte (FSDI->upper nibble of byte 2
+  // Command Structure: INS, FSDI | CID, CRC1, CRC2
+  // CRC-version is CRC-A
+  // CID is always 0 in this Lib
+  uint8_t send_rats[] = {0xE0,(FSDI<<4)};
+
+  uint16_t crc = crc16(send_rats,2);
+
+  send_rats[2]=crc & 0xff;
+  send_rats[3]=(crc >> 8);
+
+  // clear interrupts
+  mfrc630_clear_irq0();
+  mfrc630_clear_irq1();
+
+  // enable the global IRQ for Rx done and Errors.
+  mfrc630_write_reg(MFRC630_REG_IRQ0EN, MFRC630_IRQ0EN_RX_IRQEN | MFRC630_IRQ0EN_ERR_IRQEN);
+  mfrc630_write_reg(MFRC630_REG_IRQ1EN, MFRC630_IRQ1EN_TIMER0_IRQEN);  // only trigger on timer for irq1
+
+  // configure a timeout timer.
+  uint8_t timer_for_timeout = 0;
+
+  // Set timer to 221 kHz clock, start at the end of Tx.
+  mfrc630_timer_set_control(timer_for_timeout, MFRC630_TCONTROL_CLK_211KHZ | MFRC630_TCONTROL_START_TX_END);
+  // Frame waiting time: FWT = (256 x 16/fc) x 2 FWI
+  // FWI defaults to four... so that would mean wait for a maximum of ~ 5ms
+
+  mfrc630_timer_set_reload(timer_for_timeout, 1000);  // 1000 ticks of 5 usec is 5 ms.
+  mfrc630_timer_set_value(timer_for_timeout, 1000);
+
+  // Go into send, then straight after in receive.
+  mfrc630_cmd_transceive(send_rats, 4);
+  MFRC630_PRINTF("Sending RATS\n");
+  // block until we are done
+  uint8_t irq1_value = 0;
+  while (!(irq1_value & (1 << timer_for_timeout))) {
+    irq1_value = mfrc630_irq1();
+    if (irq1_value & MFRC630_IRQ1_GLOBAL_IRQ) {  // either ERR_IRQ or RX_IRQ
+      break;  // stop polling irq1 and quit the timeout loop.
+    }
+  }
+  MFRC630_PRINTF("After waiting for answer\n");
+  mfrc630_cmd_idle();
+
+  // if no Rx IRQ, or if there's an error somehow, return 0
+  uint8_t irq0 = mfrc630_irq0();
+  if ((!(irq0 & MFRC630_IRQ0_RX_IRQ)) || (irq0 & MFRC630_IRQ0_ERR_IRQ)) {
+    MFRC630_PRINTF("No RX, irq1: %hhx irq0: %hhx\n", irq1_value, irq0);
+    return 0;
+  }
+
+  uint8_t rx_len = mfrc630_fifo_length();
+  MFRC630_PRINTF("rx_len: %hhd\n", rx_len);
+  mfrc630_read_fifo(ats, rx_len);
+  
+  //ATS CRC could be checked here, but we assume its correct
+  rx_len = rx_len-2; //Do not print out the CRC
+  //technically, the CRC is now inside of the ATS array, but we do not care about it.
+
+  MFRC630_PRINTF("RATS answer: ");
+  mfrc630_print_block((uint8_t*) ats, rx_len);
+  MFRC630_PRINTF("\n");
+  bPCB = 0x02; //Refresh PCB
+  return rx_len;
+}
+
+
+uint8_t mfrc630_iso14443_L4_Exchange(uint8_t* pCmd, uint8_t bCmdLen, uint8_t* pResp) {
+
+  uint8_t aBuffer[64];// array size meets FSDI define!
+
+  mfrc630_cmd_idle();
+  // mfrc630_AN1102_recommended_registers_no_transmitter(MFRC630_PROTO_ISO14443A_106_MILLER_MANCHESTER);
+  mfrc630_flush_fifo();
+
+  // disable the CRC registers. CRC needs to be appended externally
+  mfrc630_write_reg(MFRC630_REG_TXCRCPRESET, MFRC630_RECOM_14443A_CRC | MFRC630_CRC_OFF);
+  mfrc630_write_reg(MFRC630_REG_RXCRCCON, MFRC630_RECOM_14443A_CRC | MFRC630_CRC_OFF);
+
+  mfrc630_write_reg(MFRC630_REG_RXBITCTRL, 0);
+
+  bCmdLen=1;
+  aBuffer[0]= bPCB;  
+  for(int i=0; i < bCmdLen; i++)aBuffer[i+1]=pCmd[i];
+
+  //CRC
+  uint16_t crc = crc16(aBuffer,bCmdLen+1);
+  aBuffer[bCmdLen+1]=crc & 0xff;
+  aBuffer[bCmdLen+2]=(crc >> 8);
+
+  
+  // clear interrupts
+  mfrc630_clear_irq0();
+  mfrc630_clear_irq1();
+
+  // enable the global IRQ for Rx done and Errors.
+  mfrc630_write_reg(MFRC630_REG_IRQ0EN, MFRC630_IRQ0EN_RX_IRQEN | MFRC630_IRQ0EN_ERR_IRQEN);
+  mfrc630_write_reg(MFRC630_REG_IRQ1EN, MFRC630_IRQ1EN_TIMER0_IRQEN);  // only trigger on timer for irq1
+
+  // configure a timeout timer.
+  uint8_t timer_for_timeout = 0;
+
+  // Set timer to 221 kHz clock, start at the end of Tx.
+  mfrc630_timer_set_control(timer_for_timeout, MFRC630_TCONTROL_CLK_211KHZ | MFRC630_TCONTROL_START_TX_END);
+  // Frame waiting time: FWT = (256 x 16/fc) x 2 FWI
+  // FWI defaults to four... so that would mean wait for a maximum of ~ 5ms
+
+  mfrc630_timer_set_reload(timer_for_timeout, 1000);  // 1000 ticks of 5 usec is 5 ms.
+  mfrc630_timer_set_value(timer_for_timeout, 1000);
+
+  // Go into send, then straight after in receive.
+  mfrc630_cmd_transceive(aBuffer, bCmdLen+3);
+  MFRC630_PRINTF("Sending pCmd\n");
+  // block until we are done
+  uint8_t irq1_value = 0;
+  while (!(irq1_value & (1 << timer_for_timeout))) {
+    irq1_value = mfrc630_irq1();
+    if (irq1_value & MFRC630_IRQ1_GLOBAL_IRQ) {  // either ERR_IRQ or RX_IRQ
+      break;  // stop polling irq1 and quit the timeout loop.
+    }
+  }
+  MFRC630_PRINTF("After waiting for answer\n");
+  mfrc630_cmd_idle();
+
+  // if no Rx IRQ, or if there's an error somehow, return 0
+  uint8_t irq0 = mfrc630_irq0();
+  if ((!(irq0 & MFRC630_IRQ0_RX_IRQ)) || (irq0 & MFRC630_IRQ0_ERR_IRQ)) {
+    MFRC630_PRINTF("No RX, irq1: %hhx irq0: %hhx\n", irq1_value, irq0);
+    return 0;
+  }
+
+  uint8_t rx_len = mfrc630_fifo_length();
+  MFRC630_PRINTF("rx_len: %hhd\n", rx_len);
+  mfrc630_read_fifo(pResp, rx_len);
+  
+  // CRC could be checked here, but we assume its correct
+  rx_len = rx_len-2; //Do not print out the CRC
+  //technically, the CRC is now inside of the ATS array, but we do not care about it.
+
+  MFRC630_PRINTF("Answer: ");
+  mfrc630_print_block((uint8_t*) pResp, rx_len);
+  MFRC630_PRINTF("\n");
+
+  //Toggle BlockNumber in PCB:
+  bPCB |= 1UL << 0;
+
+  
+  return rx_len;
+}
+
+
+
 // ---------------------------------------------------------------------------
 // MIFARE
 // ---------------------------------------------------------------------------
@@ -930,4 +1104,49 @@ void mfrc630_MF_example_dump() {
   } else {
     MFRC630_PRINTF("No answer to REQA, no cards?\n");
   }
+}
+
+
+
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+#define POLYNOM 0x1021
+#define CRC_INIT 0xC6C6
+#define ORDER 16
+
+//Helper function, reverses the lower bitnum bits of the given input crc e.g. E0 => 07
+unsigned short reflect (unsigned short crc, int bitnum) {
+  unsigned short i, j=1, crcout=0;
+  for (i=(unsigned short)1<<(bitnum-1); i; i>>=1) {
+    if (crc & i) crcout|=j;
+    j<<= 1;
+  }
+  return (crcout);
+}
+
+//calculates the CRC16 needed for ISO14443L4 communication Protocol
+unsigned short crc16(unsigned char* p, unsigned short len) {
+  
+  unsigned short i, j, c, bit;
+  unsigned short crc = CRC_INIT;
+
+  for (i=0; i<len; i++) {
+
+    c = (unsigned short)*p++;
+    c = reflect(c, 8);
+
+    for (j=0x80; j; j>>=1) {
+
+      bit = crc & 0x8000;
+      crc<<= 1;
+      if (c & j) bit^= 0x8000;
+      if (bit) crc^= POLYNOM;
+    }
+  } 
+
+  crc=reflect(crc, ORDER);
+
+  return(crc);
 }

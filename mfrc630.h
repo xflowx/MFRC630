@@ -2,6 +2,7 @@
   The MIT License (MIT)
 
   Copyright (c) 2016 Ivor Wanders
+  Copyright (c) 2020 Florian Mikulik
 
   Permission is hereby granted, free of charge, to any person obtaining a copy
   of this software and associated documentation files (the "Software"), to deal
@@ -26,6 +27,7 @@
 #define MFRC630_H_
 #include <stdint.h>
 #include "mfrc630_def.h"
+#include "ISO14443_L4_def.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -580,6 +582,31 @@ uint16_t mfrc630_iso14443a_WUPA_REQA(uint8_t instruction);
 uint8_t mfrc630_iso14443a_select(uint8_t* uid, uint8_t* sak);
 //!  @}
 
+/*! \brief Performs the Request Anser To Select procedure(RATS) to activate the Card to ISO14443a-4
+
+  This performs the RATS procedure as explained in ISO 14443A-4, this activates ISO14443 Layer 4 and returns the ATS 
+  of the card (Answer to Select)
+
+  \param [out] ats: The ATS of the card. from this, some communication protocal parameters can be extracted, as well
+					as the Historical Bytes, which *can* give some information about the cards content or origin
+ 
+  \return The length of the ATS in bytes, or 0 in case of failure.
+*/
+uint8_t mfrc630_iso14443a_RATS(uint8_t* ats);
+//!  @}
+
+
+/*! \brief Performs a command exchange with ISO14443L4 protocol
+
+  \param [in] pCmd: Command to Card
+  \param [in] bCmdLen: Length of pCmd
+  \param [out] pResp: Response from Card
+  
+  \return The length of the response in bytes, or 0 in case of failure.
+*/
+uint8_t mfrc630_iso14443_L4_Exchange(uint8_t* pCmd, uint8_t bCmdLen, uint8_t* pResp);
+//!  @}
+
 // ---------------------------------------------------------------------------
 // MIFARE
 // ---------------------------------------------------------------------------
@@ -690,6 +717,31 @@ uint8_t mfrc630_MF_write_block(uint8_t block_address, const uint8_t* source);
   To disable the currently enabled encryption process.
 */
 void mfrc630_MF_example_dump();
+//!  @}
+
+
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+/*! \brief Calculates CRC16 needed for ISO14443-4 exchange
+  
+    \param [in] *data_p Pointer to input data
+    \param [in] length input data length
+    \return crc16 of input data
+
+*/
+unsigned short crc16(unsigned char* p, unsigned short len);
+//!  @}
+
+
+/*! \brief Reverses the lower biznum bits of a input crc
+  
+    \param [in] crc input data
+    \param [in] bitnum number of bits to reverse
+    \return reversed value
+
+*/
+unsigned short reflect (unsigned short crc, int bitnum);
 //!  @}
 
 
