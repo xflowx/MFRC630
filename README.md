@@ -23,6 +23,8 @@ The library is clearly structured, providing functionality from low level to hig
 
 * ISO14443A: Provides the necessities from ISO14443a to interact with RFID tags: the REQA, WUPA and SELECT procedure (with collision handling) to determine the UID(s).
 
+* ISO14443 - Layer 4: Provides basic support for ISO14443-Layer4 commands, as well as Layer 4 activation (RATS)
+
 * MIFARE: Provides functions to authenticate, read and write blocks on MIFARE cards.
 
 Documentation
